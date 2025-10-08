@@ -1,109 +1,84 @@
-# edison
-Moshi-Moshi, I am Edison. Stella is unavailable right now so I will be dealing with all Your queries.
+# Edison - AI-Powered ChatGPT Interface
 
-## 🚀 FastAPI ChatGPT-like Interface
+Moshi-Moshi, I am Edison. Stella is unavailable right now so I will be dealing with all your queries.
 
-A modern, responsive chat interface built with FastAPI, featuring a ChatGPT-like UI for conversational interactions.
+## 🚀 Features
 
-### Features
+A sophisticated AI chat interface powered by OpenAI's ChatKit agents, featuring:
 
-- 🎨 Modern, responsive ChatGPT-inspired UI
-- 💬 Real-time chat interface
-- 📝 Message history tracking per session
-- 🔄 Clear chat functionality
-- ⚡ Fast and lightweight with FastAPI
-- 🎯 Easy to extend with AI integrations
+- 🤖 **OpenAI ChatKit Integration** - Advanced AI agent workflows
+- 🔍 **Vector Store Search** - Knowledge-based responses using OpenAI vector stores
+- 🎨 **Modern ChatGPT-like UI** - Responsive, dark-themed interface
+- 💬 **Real-time Chat** - Seamless conversation experience
+- 🔐 **Secure Configuration** - Environment-based secrets management
+- 📝 **Session Management** - Per-session message history
+- ⚡ **FastAPI Backend** - High-performance async API
+- 🛡️ **Error Handling** - Robust fallback mechanisms
 
-### Quick Start
-
-1. **Install Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-2. **Run the Application**
-   ```bash
-   python main.py
-   ```
-   
-   Or using uvicorn directly:
-   ```bash
-   uvicorn main:app --reload --host 0.0.0.0 --port 8000
-   ```
-
-3. **Open Your Browser**
-   
-   Navigate to: `http://localhost:8000`
-
-### API Endpoints
-
-- `GET /` - Main chat interface (HTML)
-- `POST /api/chat` - Send a chat message
-- `POST /api/chat/clear` - Clear chat history
-- `GET /api/chat/history/{session_id}` - Get chat history
-- `GET /health` - Health check endpoint
-
-### Architecture
+## 🏗️ Architecture
 
 ```
 edison/
-├── main.py              # FastAPI application with embedded HTML UI
+├── main.py              # FastAPI app with OpenAI ChatKit integration
 ├── requirements.txt     # Python dependencies
-└── README.md           # This file
+├── .env                 # Environment variables (not in git)
+├── .env.example         # Template for environment setup
+└── README.md           # This documentation
 ```
 
-### Extending with AI
+## 🚀 Quick Start
 
-The current implementation includes a placeholder `generate_response()` function. To add real AI capabilities, integrate with:
-
-- **OpenAI API**: For GPT-3.5/GPT-4 models
-- **Anthropic Claude**: For Claude models
-- **Local Models**: Using Ollama, LM Studio, etc.
-- **Other APIs**: Cohere, Google PaLM, etc.
-
-Example OpenAI integration:
-```python
-import openai
-
-def generate_response(user_message: str, history: List[dict]) -> str:
-    messages = [{"role": msg["role"], "content": msg["content"]} for msg in history]
-    messages.append({"role": "user", "content": user_message})
-    
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=messages
-    )
-    
-    return response.choices[0].message.content
-```
-
-### Configuration
-
-- **Host**: Default `0.0.0.0` (all interfaces)
-- **Port**: Default `8000`
-- **Session Management**: In-memory (for production, use Redis or a database)
-
-### Development
+### 1. Environment Setup
 
 ```bash
-# Install in development mode
-pip install -r requirements.txt
+# Clone and navigate to project
+cd edison
 
-# Run with auto-reload
-uvicorn main:app --reload
+# Copy environment template
+cp .env.example .env
+
+# Edit .env with your configuration
+# Add your OpenAI API key and other settings
 ```
 
-### Production Deployment
+### 2. Configure Environment Variables
 
-For production, consider:
+Edit `.env` file with your settings:
 
-1. Using a production ASGI server (Gunicorn + Uvicorn workers)
-2. Adding authentication and authorization
-3. Implementing rate limiting
-4. Using a proper database for session storage
-5. Adding HTTPS/SSL certificates
-6. Containerizing with Docker
+```env
+# OpenAI Configuration
+OPENAI_API_KEY=your_openai_api_key_here
 
-### License
+# OpenAI ChatKit Configuration  
+VECTOR_STORE_ID=your_vector_store_id_here
+WORKFLOW_ID=your_workflow_id_here
+
+# Server Configuration
+HOST=0.0.0.0
+PORT=8000
+```
+
+### 3. Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Run the Application
+
+```bash
+python main.py
+```
+
+Or using uvicorn directly:
+```bash
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### 5. Access the Interface
+
+Navigate to: `http://localhost:8000`
+
+##  License
 
 MIT License - see LICENSE file for details
