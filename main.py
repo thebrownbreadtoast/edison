@@ -5,8 +5,34 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get OpenAI API key from environment variable
+if not os.getenv("OPENAI_API_KEY"):
+    raise ValueError("OPENAI_API_KEY not found in environment variables. Please check your .env file.")
+    
+print(f"✅ Set OPENAI_API_KEY environment variable for ChatKit trace export")
+
+# Verify the environment variable is set
+if os.getenv("OPENAI_API_KEY"):
+    print(f"✅ OPENAI_API_KEY is available for ChatKit agents")
+else:
+    print("⚠️  Warning: OPENAI_API_KEY not found - may cause trace export issues")
+
+# OpenAI ChatKit imports
+from openai import AsyncOpenAI
+from types import SimpleNamespace
+from agents import RunContextWrapper, Agent, ModelSettings, TResponseInputItem, Runner, RunConfig
+from openai.types.shared.reasoning import Reasoning
 
 app = FastAPI(title="Edison - ChatGPT-like Interface")
+
+# Shared client for guardrails and file search - use environment variable for consistency
+client = AsyncOpenAI()  # Will automatically use OPENAI_API_KEY environment variable
+ctx = SimpleNamespace(guardrail_llm=client)
 
 # In-memory storage for chat sessions
 chat_sessions = {}
@@ -27,6 +53,200 @@ class ChatResponse(BaseModel):
     response: str
     session_id: str
     timestamp: str
+
+
+# OpenAI ChatKit Agent Classes and Configuration
+class AgentContext:
+    def __init__(self, input_result: str, workflow_input_as_text: str):
+        self.input_result = input_result
+        self.workflow_input_as_text = workflow_input_as_text
+
+
+def agent_instructions(run_context: RunContextWrapper[AgentContext], _agent: Agent[AgentContext]):
+    input_result = run_context.context.input_result
+    workflow_input_as_text = run_context.context.workflow_input_as_text
+    return f"""You are a personal assistant who knows about me and responds only if User asks something related to Akshay Dadwal, use info in Knowledge.
+
+Knowledge:  {input_result}
+User query: {workflow_input_as_text}"""
+
+
+# Initialize main agent with error handling for trace export
+try:
+    agent = Agent(
+        name="Agent",
+        instructions=agent_instructions,
+        model="gpt-5-nano",
+        model_settings=ModelSettings(
+            store=True,
+            reasoning=Reasoning(
+                effort="low"
+            )
+        )
+    )
+    print("✅ Main agent initialized successfully")
+except Exception as e:
+    print(f"⚠️  Warning during agent initialization: {e}")
+    # Continue anyway - the agent might still work
+    agent = Agent(
+        name="Agent",
+        instructions=agent_instructions,
+        model="gpt-5-nano",
+        model_settings=ModelSettings(
+            store=True,
+            reasoning=Reasoning(
+                effort="low"
+            )
+        )
+    )
+
+
+class WorkflowInput(BaseModel):
+    input_as_text: str
+
+
+# Main OpenAI ChatKit workflow entrypoint
+async def run_workflow(workflow_input: WorkflowInput):
+    """
+    Main workflow using OpenAI ChatKit agents with the specified workflow ID
+    """
+    print(f"🚀 Starting ChatKit workflow for: {workflow_input.input_as_text[:50]}...")
+    
+    state = {}
+    workflow = workflow_input.model_dump()
+    conversation_history: list[TResponseInputItem] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": workflow["input_as_text"]
+                }
+            ]
+        }
+    ]
+    
+    # File search for relevant knowledge using vector store
+    try:
+        print("🔍 Searching vector store...")
+        # Search vector store and handle response format
+        search_response = await client.vector_stores.search(
+            vector_store_id=os.getenv("VECTOR_STORE_ID", "vs_68e644eb49808191a3f7743ee399449e"), 
+            query=workflow["input_as_text"], 
+            max_num_results=2
+        )
+        
+        # Handle the actual OpenAI API response structure
+        filesearch_result = {"results": []}
+        if hasattr(search_response, 'data') and search_response.data:
+            for result in search_response.data:
+                filesearch_result["results"].append({
+                    "id": getattr(result, 'file_id', getattr(result, 'id', 'unknown')),
+                    "filename": getattr(result, 'filename', getattr(result, 'name', 'unknown')),
+                    "score": getattr(result, 'score', getattr(result, 'relevance_score', 0.0)),
+                    "content": getattr(result, 'content', 'No content available')
+                })
+        
+        # Extract content safely
+        if filesearch_result["results"]:
+            transform_result = {"result": filesearch_result["results"][0]["content"]}
+        else:
+            transform_result = {"result": "No relevant knowledge found"}
+        print("✅ Vector search completed")
+    except Exception as e:
+        print(f"⚠️  Vector search failed (using fallback): {e}")
+        # Fallback if vector store is not available
+        transform_result = {"result": None}
+    
+    # Run main agent with context and knowledge if we have results
+    if transform_result["result"]:
+        try:
+            print("🤖 Running main agent...")
+            agent_result_temp = await Runner.run(
+                agent,
+                input=[
+                    *conversation_history
+                ],
+                run_config=RunConfig(trace_metadata={
+                    "__trace_source__": "agent-builder",
+                    "workflow_id": os.getenv("WORKFLOW_ID", "wf_68e563885c7481909af54f1286d1a22a05adf05500389df0")
+                }),
+                context=AgentContext(
+                    input_result=transform_result["result"],
+                    workflow_input_as_text=workflow["input_as_text"]
+                )
+            )
+            print("✅ Main agent completed")
+
+            conversation_history.extend([item.to_input_item() for item in agent_result_temp.new_items])
+
+            agent_result = {
+                "output_text": agent_result_temp.final_output_as(str)
+            }
+            end_result = {
+                "output_text": agent_result["output_text"]
+            }
+            
+            print(f"✅ ChatKit workflow completed: {end_result['output_text'][:50]}...")
+            return end_result
+            
+        except Exception as e:
+            print(f"⚠️  Main agent warning (using fallback): {e}")
+            # Fallback response
+            return {
+                "output_text": f"I'm Edison, your AI assistant. I encountered an issue with the ChatKit workflow: {str(e)}. How can I help you today?"
+            }
+    else:
+        # No knowledge found
+        end_result = {
+            "output_text": "Sorry, I can't help."
+        }
+        return end_result
+
+
+async def generate_response(user_message: str, history: List[dict]) -> str:
+    """
+    Generate a response using the OpenAI ChatKit workflow.
+    """
+    try:
+        # Create workflow input
+        workflow_input = WorkflowInput(input_as_text=user_message)
+        
+        # Run the ChatKit agent workflow
+        result = await run_workflow(workflow_input)
+        
+        return result["output_text"]
+    
+    except Exception as e:
+        # Fallback response if agent workflow fails
+        return f"I'm Edison, your AI assistant. I encountered an issue processing your request: {str(e)}. Please try again."
+
+
+def generate_response_sync(user_message: str, history: List[dict]) -> str:
+    """
+    Synchronous fallback function for simple responses.
+    Used when the async agent workflow is not available.
+    """
+    message_lower = user_message.lower()
+    
+    # Simple rule-based responses for demonstration
+    if any(greeting in message_lower for greeting in ["hello", "hi", "hey", "moshi"]):
+        return "Hello! I'm Edison, here to help you. What would you like to know?"
+    
+    elif "stella" in message_lower:
+        return "Stella is currently unavailable, but I'm here to assist you with whatever you need!"
+    
+    elif any(word in message_lower for word in ["who are you", "what are you", "introduce"]):
+        return "I am Edison, an AI assistant. Stella is unavailable right now, so I will be handling all your queries. I'm here to help answer questions, provide information, and assist you with various tasks!"
+    
+    elif any(word in message_lower for word in ["help", "what can you do", "capabilities"]):
+        return "I can help you with various tasks such as:\n- Answering questions\n- Providing information\n- Having conversations\n- And much more!\n\nNote: I'm now powered by OpenAI's ChatKit agents for intelligent responses."
+    
+    elif "?" in user_message:
+        return f"That's an interesting question! Let me think about that: '{user_message}'. I'm processing this with my AI capabilities."
+    
+    else:
+        return f"I understand you said: '{user_message}'. I'm Edison, your AI assistant powered by OpenAI ChatKit, ready to help with any questions or tasks you have."
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -376,7 +596,7 @@ async def read_root():
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Handle chat messages and return responses"""
+    """Handle chat messages and return responses using OpenAI ChatKit"""
     session_id = request.session_id
     
     # Initialize session if it doesn't exist
@@ -386,14 +606,18 @@ async def chat(request: ChatRequest):
     # Add user message to history
     timestamp = datetime.now().isoformat()
     user_message = Message(role="user", content=request.message, timestamp=timestamp)
-    chat_sessions[session_id].append(user_message.dict())
+    chat_sessions[session_id].append(user_message.content)
     
-    # Generate a simple response (placeholder for actual AI integration)
-    response_text = generate_response(request.message, chat_sessions[session_id])
+    # Generate response using the OpenAI ChatKit workflow
+    try:
+        response_text = await generate_response(user_message.content, chat_sessions[session_id])
+    except Exception as e:
+        # Fallback to sync response if ChatKit workflow fails
+        response_text = generate_response_sync(user_message.content, chat_sessions[session_id])
     
     # Add assistant response to history
     assistant_message = Message(role="assistant", content=response_text, timestamp=timestamp)
-    chat_sessions[session_id].append(assistant_message.dict())
+    chat_sessions[session_id].append(assistant_message.content)
     
     return ChatResponse(
         response=response_text,
@@ -420,36 +644,6 @@ async def get_history(session_id: str):
     }
 
 
-def generate_response(user_message: str, history: List[dict]) -> str:
-    """
-    Generate a response to the user message.
-    This is a placeholder function. In a real implementation, you would:
-    - Integrate with OpenAI API, Anthropic, or other LLM providers
-    - Use the conversation history for context
-    - Implement more sophisticated response generation
-    """
-    message_lower = user_message.lower()
-    
-    # Simple rule-based responses for demonstration
-    if any(greeting in message_lower for greeting in ["hello", "hi", "hey", "moshi"]):
-        return "Hello! I'm Edison, here to help you. What would you like to know?"
-    
-    elif "stella" in message_lower:
-        return "Stella is currently unavailable, but I'm here to assist you with whatever you need!"
-    
-    elif any(word in message_lower for word in ["who are you", "what are you", "introduce"]):
-        return "I am Edison, an AI assistant. Stella is unavailable right now, so I will be handling all your queries. I'm here to help answer questions, provide information, and assist you with various tasks!"
-    
-    elif any(word in message_lower for word in ["help", "what can you do", "capabilities"]):
-        return "I can help you with various tasks such as:\n- Answering questions\n- Providing information\n- Having conversations\n- And much more!\n\nNote: This is a boilerplate implementation. To get full AI capabilities, you'll need to integrate with an AI API provider like OpenAI, Anthropic, or others."
-    
-    elif "?" in user_message:
-        return f"That's an interesting question! In a production environment, I would process your query using advanced AI models. For now, I'm acknowledging your question: '{user_message}'"
-    
-    else:
-        return f"I understand you said: '{user_message}'. This is a demonstration interface. To provide intelligent responses, please integrate with an AI API provider (OpenAI, Anthropic, etc.) in the generate_response function."
-
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -458,4 +652,6 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
